@@ -1,0 +1,168 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Query Chat</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen flex flex-col">
+    <div class="container mx-auto p-4 max-w-4xl">
+        <h1 class="text-3xl font-bold text-center mb-6 text-gray-800">PDF Query Chat</h1>
+        
+        <!-- PDF Upload Section -->
+        <div class="bg-white p-6 rounded-lg shadow-md mb-6">
+            <h2 class="text-xl font-semibold mb-4">Upload PDF</h2>
+            <form id="uploadForm" enctype="multipart/form-data" class="flex flex-col gap-4">
+                <input type="file" id="pdfInput" name="pdf" accept=".pdf" class="border p-2 rounded">
+                <button type="submit" class="bg-blue-500 text-white py-2 px-4 rounded hover:bg-blue-600">Upload PDF</button>
+            </form>
+            <p id="uploadMessage" class="mt-4 text-green-600 hidden"></p>
+            <p id="uploadError" class="mt-4 text-red-600 hidden"></p>
+        </div>
+        
+        <!-- Chat Section -->
+        <div class="bg-white p-6 rounded-lg shadow-md">
+            <h2 class="text-xl font-semibold mb-4">Chat with PDF</h2>
+            <div id="chatContainer" class="border p-4 rounded h-96 overflow-y-auto mb-4 bg-gray-50">
+                <!-- Chat messages will be appended here -->
+            </div>
+            <form id="chatForm" class="flex gap-2">
+                <input type="text" id="queryInput" placeholder="Ask a question about the PDF..." class="flex-1 border p-2 rounded">
+                <button type="submit" class="bg-green-500 text-white py-2 px-4 rounded hover:bg-green-600">Send</button>
+                <button type="button" id="clearChat" class="bg-red-500 text-white py-2 px-4 rounded hover:bg-red-600">Clear Chat</button>
+            </form>
+            <p id="chatError" class="mt-4 text-red-600 hidden"></p>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            const uploadMessage = document.getElementById('uploadMessage');
+            const uploadError = document.getElementById('uploadError');
+            uploadMessage.classList.add('hidden');
+            uploadError.classList.add('hidden');
+            
+            try {
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                const result = await response.json();
+                
+                if (response.ok) {
+                    uploadMessage.textContent = result.message;
+                    uploadMessage.classList.remove('hidden');
+                    document.getElementById('chatContainer').innerHTML = '';
+                } else {
+                    uploadError.textContent = result.error;
+                    uploadError.classList.remove('hidden');
+                }
+            } catch (error) {
+                uploadError.textContent = 'Error uploading PDF.';
+                uploadError.classList.remove('hidden');
+            }
+        });
+
+        document.getElementById('chatForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const query = document.getElementById('queryInput').value.trim();
+            const chatError = document.getElementById('chatError');
+            chatError.classList.add('hidden');
+            
+            if (!query) {
+                chatError.textContent = 'Query cannot be empty.';
+                chatError.classList.remove('hidden');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query })
+                });
+                const result = await response.json();
+                
+                if (response.ok) {
+                    const chatContainer = document.getElementById('chatContainer');
+                    result.chat_history.forEach(({ user, bot }) => {
+                        chatContainer.innerHTML += `
+                            <div class="mb-2">
+                                <p class="font-semibold text-blue-600">You:</p>
+                                <p class="ml-4">${user}</p>
+                                <p class="font-semibold text-green-600">Bot:</p>
+                                <p class="ml-4">${bot}</p>
+                            </div>
+                        `;
+                    });
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                    document.getElementById('queryInput').value = '';
+                } else {
+                    chatError.textContent = result.error;
+                    chatError.classList.remove('hidden');
+                }
+            } catch (error) {
+                chatError.textContent = 'Error processing query.';
+                chatError.classList.remove('hidden');
+            }
+        });
+
+        document.getElementById('clearChat').addEventListener('click', async () => {
+            try {
+                const response = await fetch('/clear', { method: 'POST' });
+                const result = await response.json();
+                
+                if (response.ok) {
+                    document.getElementById('chatContainer').innerHTML = '';
+                    document.getElementById('chatError').classList.add('hidden');
+                }
+            } catch (error) {
+                document.getElementById('chatError').textContent = 'Error clearing chat.';
+                document.getElementById('chatError').classList.remove('hidden');
+            }
+        });
+    </script>
+</body>
+</html>
